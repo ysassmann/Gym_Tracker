@@ -19,6 +19,7 @@ uv run streamlit run app.py
 - Fallback backend: local `gymtracker_state.sqlite3` when Postgres secrets are not set.
 - First Postgres start migrates local SQLite/JSON data automatically if remote table is still empty.
 - For Streamlit Cloud durability, use Postgres; local files are not guaranteed across app rebuilds.
+- The app shows the active backend in the UI (`Postgres (Supabase)` or local SQLite fallback).
 
 ## Supabase table
 

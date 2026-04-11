@@ -18,31 +18,16 @@ BASE_DIR = Path(__file__).resolve().parent
 JSON_PATH = BASE_DIR / "gymtracker_state.json"
 DB_PATH = BASE_DIR / "gymtracker_state.sqlite3"
 PG_KEYS = ("PGHOST", "PGPORT", "PGDATABASE", "PGUSER", "PGPASSWORD")
-DEBUG_LOG_PATH = BASE_DIR / "debug-602ba8.log"
-DEBUG_RUN_ID = "cycle-1"
-DEBUG_SESSION_ID = "602ba8"
 
 
-def dlog(hypothesis_id: str, location: str, message: str, data: dict) -> None:
+def cfg(key: str):
+    v = os.getenv(key)
+    if v:
+        return v
     try:
-        with DEBUG_LOG_PATH.open("a", encoding="utf-8") as f:
-            f.write(
-                json.dumps(
-                    {
-                        "sessionId": DEBUG_SESSION_ID,
-                        "runId": DEBUG_RUN_ID,
-                        "hypothesisId": hypothesis_id,
-                        "location": location,
-                        "message": message,
-                        "data": data,
-                        "timestamp": int(time.time() * 1000),
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-    except Exception:
-        pass
+        return st.secrets.get(key)
+    except StreamlitSecretNotFoundError:
+        return None
 
 
 def expected_password() -> str:
@@ -81,22 +66,18 @@ def save_sqlite_db(db: dict) -> None:
 
 
 def pg_ready() -> bool:
-    miss = [k for k in PG_KEYS if not (os.getenv(k) or st.secrets.get(k))]
-    ok = not miss
-    # region agent log
-    dlog("H1", "app.py:pg_ready", "Postgres readiness evaluated", {"pgReady": ok, "missingKeys": miss})
-    # endregion
-    return ok
+    return all(cfg(k) for k in PG_KEYS)
 
 
 def pg_conn() -> psycopg.Connection:
     c = psycopg.connect(
-        host=os.getenv("PGHOST") or st.secrets["PGHOST"],
-        port=int(os.getenv("PGPORT") or st.secrets["PGPORT"]),
-        dbname=os.getenv("PGDATABASE") or st.secrets["PGDATABASE"],
-        user=os.getenv("PGUSER") or st.secrets["PGUSER"],
-        password=os.getenv("PGPASSWORD") or st.secrets["PGPASSWORD"],
-        sslmode=os.getenv("PGSSLMODE") or st.secrets.get("PGSSLMODE", "require"),
+        host=cfg("PGHOST"),
+        port=int(cfg("PGPORT")),
+        dbname=cfg("PGDATABASE"),
+        user=cfg("PGUSER"),
+        password=cfg("PGPASSWORD"),
+        sslmode=cfg("PGSSLMODE") or "require",
+        connect_timeout=5,
     )
     with c.cursor() as cur:
         cur.execute(
@@ -139,40 +120,22 @@ def save_pg_db(db: dict) -> None:
 
 
 def load_db() -> dict:
-    ready = pg_ready()
-    if not ready:
-        db = load_sqlite_or_json_db()
-        # region agent log
-        dlog("H1", "app.py:load_db", "Loaded from local fallback", {"source": "sqlite_or_json", "keys": len(db)})
-        # endregion
-        return db
+    if not pg_ready():
+        return load_sqlite_or_json_db()
     db = load_pg_db()
-    # region agent log
-    dlog("H2", "app.py:load_db", "Loaded from Postgres", {"source": "postgres", "keys": len(db)})
-    # endregion
     if db:
         return db
     local = load_sqlite_or_json_db()
     if local:
         save_pg_db(local)
-        # region agent log
-        dlog("H3", "app.py:load_db", "Migrated local data to Postgres", {"migratedKeys": len(local)})
-        # endregion
     return local
 
 
 def save_db(db: dict) -> None:
-    ready = pg_ready()
-    if ready:
+    if pg_ready():
         save_pg_db(db)
-        # region agent log
-        dlog("H2", "app.py:save_db", "Saved to Postgres", {"keys": len(db)})
-        # endregion
     else:
         save_sqlite_db(db)
-        # region agent log
-        dlog("H1", "app.py:save_db", "Saved to local fallback", {"keys": len(db)})
-        # endregion
 
 
 def ensure_db():
@@ -189,9 +152,6 @@ def persist_values(keys: list[str]):
             st.session_state.db[k] = st.session_state[k]
             ch = True
     if ch:
-        # region agent log
-        dlog("H4", "app.py:persist_values", "Detected changed keys for save", {"candidateKeys": len(keys)})
-        # endregion
         save_db(st.session_state.db)
         st.session_state.saved_at = time.strftime("%H:%M:%S")
 
@@ -277,6 +237,14 @@ def week_stats(db: dict, w: int) -> tuple[int, int]:
             done_days += 1
     pct = round(td / tt * 100) if tt else 0
     return pct, done_days
+
+
+def active_day_keys(exs: list[dict], w: int, d: str, k_rpe: str, k_sn: str) -> list[str]:
+    return (
+        [k_rpe, k_sn]
+        + [sk(w, d, e["id"], "chk") for e in exs]
+        + [k for e in exs if not e.get("noinput") for k in (sk(w, d, e["id"], "aw"), sk(w, d, e["id"], "ar"), sk(w, d, e["id"], "an"))]
+    )
 
 
 def build_csv(db: dict) -> str:
@@ -373,6 +341,9 @@ st.markdown(
       .block-container {max-width: 760px; padding-top: 1rem; padding-bottom: 5rem;}
       div[data-testid="stButton"] > button {border-radius: 12px; height: 2.7rem;}
       div[data-testid="stTextInput"] input, div[data-testid="stTextArea"] textarea {border-radius: 10px;}
+      div[data-testid="stCheckbox"] {padding: .25rem 0;}
+      div[data-testid="stCheckbox"] label {font-size: 1.05rem; min-height: 2.2rem;}
+      div[data-testid="stCheckbox"] input {transform: scale(1.35);}
     </style>
     """,
     unsafe_allow_html=True,
@@ -443,7 +414,7 @@ def ex_block(e: dict, warmup: bool):
 
 
 if wus:
-    st.subheader("Warmup")
+    st.subheader("Warm-up")
     for e in wus:
         ex_block(e, True)
 
@@ -509,19 +480,13 @@ st.text_area(
 )
 
 persist_values(
-    [k_rpe, k_sn]
-    + [sk(w, d, e["id"], "chk") for e in exs]
-    + [k for e in exs if not e.get("noinput") for k in (sk(w, d, e["id"], "aw"), sk(w, d, e["id"], "ar"), sk(w, d, e["id"], "an"))]
+    active_day_keys(exs, w, d, k_rpe, k_sn)
 )
 
 cd, ct = cnt_done(db, w, d)
 all_done = ct > 0 and cd == ct
 if st.button("Jetzt speichern", use_container_width=True):
-    persist_values(
-        [k_rpe, k_sn]
-        + [sk(w, d, e["id"], "chk") for e in exs]
-        + [k for e in exs if not e.get("noinput") for k in (sk(w, d, e["id"], "aw"), sk(w, d, e["id"], "ar"), sk(w, d, e["id"], "an"))]
-    )
+    persist_values(active_day_keys(exs, w, d, k_rpe, k_sn))
 if st.button("Alle Hauptübungen abhaken / lösen"):
     flip = all(db.get(sk(w, d, e["id"], "chk"), False) for e in mains) if mains else False
     for e in mains:

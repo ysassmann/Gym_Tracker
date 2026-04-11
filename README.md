@@ -15,6 +15,19 @@ uv run streamlit run app.py
 
 ## Data persistence
 
-- App state is stored in `gymtracker_state.sqlite3`.
-- If `gymtracker_state.json` exists and SQLite is empty, data migrates automatically on first load.
-- Persistence is only durable if your host keeps files between restarts.
+- Preferred backend: Supabase Postgres via Streamlit secrets (`PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, `PGSSLMODE`).
+- Fallback backend: local `gymtracker_state.sqlite3` when Postgres secrets are not set.
+- First Postgres start migrates local SQLite/JSON data automatically if remote table is still empty.
+- For Streamlit Cloud durability, use Postgres; local files are not guaranteed across app rebuilds.
+
+## Supabase table
+
+```sql
+create table if not exists gym_kv (
+  user_id text not null default 'default',
+  k text not null,
+  v jsonb not null,
+  updated_at timestamptz not null default now(),
+  primary key (user_id, k)
+);
+```

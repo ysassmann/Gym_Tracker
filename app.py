@@ -6,6 +6,7 @@ import time
 from io import StringIO
 from pathlib import Path
 
+import psycopg
 import streamlit as st
 from dotenv import load_dotenv
 from streamlit.errors import StreamlitSecretNotFoundError
@@ -16,6 +17,32 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent
 JSON_PATH = BASE_DIR / "gymtracker_state.json"
 DB_PATH = BASE_DIR / "gymtracker_state.sqlite3"
+PG_KEYS = ("PGHOST", "PGPORT", "PGDATABASE", "PGUSER", "PGPASSWORD")
+DEBUG_LOG_PATH = BASE_DIR / "debug-602ba8.log"
+DEBUG_RUN_ID = "cycle-1"
+DEBUG_SESSION_ID = "602ba8"
+
+
+def dlog(hypothesis_id: str, location: str, message: str, data: dict) -> None:
+    try:
+        with DEBUG_LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "sessionId": DEBUG_SESSION_ID,
+                        "runId": DEBUG_RUN_ID,
+                        "hypothesisId": hypothesis_id,
+                        "location": location,
+                        "message": message,
+                        "data": data,
+                        "timestamp": int(time.time() * 1000),
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+    except Exception:
+        pass
 
 
 def expected_password() -> str:
@@ -28,28 +55,124 @@ def expected_password() -> str:
         return "Gym!"
 
 
-def conn() -> sqlite3.Connection:
+def sqlite_conn() -> sqlite3.Connection:
     c = sqlite3.connect(DB_PATH)
     c.execute("CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL)")
     return c
 
 
-def load_db() -> dict:
-    with conn() as c:
-        rows = c.execute("SELECT k, v FROM kv").fetchall()
-    if rows:
-        return {k: json.loads(v) for k, v in rows}
+def load_sqlite_or_json_db() -> dict:
+    if DB_PATH.is_file():
+        with sqlite_conn() as c:
+            rows = c.execute("SELECT k, v FROM kv").fetchall()
+        if rows:
+            return {k: json.loads(v) for k, v in rows}
     if not JSON_PATH.is_file():
         return {}
     db = json.loads(JSON_PATH.read_text(encoding="utf-8"))
-    save_db(db)
+    save_sqlite_db(db)
     return db
 
 
-def save_db(db: dict) -> None:
-    with conn() as c:
+def save_sqlite_db(db: dict) -> None:
+    with sqlite_conn() as c:
         c.execute("DELETE FROM kv")
         c.executemany("INSERT INTO kv (k, v) VALUES (?, ?)", [(k, json.dumps(v, ensure_ascii=False)) for k, v in db.items()])
+
+
+def pg_ready() -> bool:
+    miss = [k for k in PG_KEYS if not (os.getenv(k) or st.secrets.get(k))]
+    ok = not miss
+    # region agent log
+    dlog("H1", "app.py:pg_ready", "Postgres readiness evaluated", {"pgReady": ok, "missingKeys": miss})
+    # endregion
+    return ok
+
+
+def pg_conn() -> psycopg.Connection:
+    c = psycopg.connect(
+        host=os.getenv("PGHOST") or st.secrets["PGHOST"],
+        port=int(os.getenv("PGPORT") or st.secrets["PGPORT"]),
+        dbname=os.getenv("PGDATABASE") or st.secrets["PGDATABASE"],
+        user=os.getenv("PGUSER") or st.secrets["PGUSER"],
+        password=os.getenv("PGPASSWORD") or st.secrets["PGPASSWORD"],
+        sslmode=os.getenv("PGSSLMODE") or st.secrets.get("PGSSLMODE", "require"),
+    )
+    with c.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS gym_kv (
+              user_id TEXT NOT NULL DEFAULT 'default',
+              k TEXT NOT NULL,
+              v JSONB NOT NULL,
+              updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+              PRIMARY KEY (user_id, k)
+            )
+            """
+        )
+    c.commit()
+    return c
+
+
+def load_pg_db() -> dict:
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT k, v::text FROM gym_kv WHERE user_id = %s", ("default",))
+        rows = cur.fetchall()
+    return {k: json.loads(v) for k, v in rows}
+
+
+def save_pg_db(db: dict) -> None:
+    rows = [("default", k, json.dumps(v, ensure_ascii=False)) for k, v in db.items()]
+    if not rows:
+        return
+    with pg_conn() as c, c.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO gym_kv (user_id, k, v)
+            VALUES (%s, %s, %s::jsonb)
+            ON CONFLICT (user_id, k)
+            DO UPDATE SET v = EXCLUDED.v, updated_at = now()
+            """,
+            rows,
+        )
+        c.commit()
+
+
+def load_db() -> dict:
+    ready = pg_ready()
+    if not ready:
+        db = load_sqlite_or_json_db()
+        # region agent log
+        dlog("H1", "app.py:load_db", "Loaded from local fallback", {"source": "sqlite_or_json", "keys": len(db)})
+        # endregion
+        return db
+    db = load_pg_db()
+    # region agent log
+    dlog("H2", "app.py:load_db", "Loaded from Postgres", {"source": "postgres", "keys": len(db)})
+    # endregion
+    if db:
+        return db
+    local = load_sqlite_or_json_db()
+    if local:
+        save_pg_db(local)
+        # region agent log
+        dlog("H3", "app.py:load_db", "Migrated local data to Postgres", {"migratedKeys": len(local)})
+        # endregion
+    return local
+
+
+def save_db(db: dict) -> None:
+    ready = pg_ready()
+    if ready:
+        save_pg_db(db)
+        # region agent log
+        dlog("H2", "app.py:save_db", "Saved to Postgres", {"keys": len(db)})
+        # endregion
+    else:
+        save_sqlite_db(db)
+        # region agent log
+        dlog("H1", "app.py:save_db", "Saved to local fallback", {"keys": len(db)})
+        # endregion
 
 
 def ensure_db():
@@ -66,6 +189,9 @@ def persist_values(keys: list[str]):
             st.session_state.db[k] = st.session_state[k]
             ch = True
     if ch:
+        # region agent log
+        dlog("H4", "app.py:persist_values", "Detected changed keys for save", {"candidateKeys": len(keys)})
+        # endregion
         save_db(st.session_state.db)
         st.session_state.saved_at = time.strftime("%H:%M:%S")
 
@@ -275,6 +401,7 @@ pct, dc = week_stats(db, w)
 st.metric("Fortschritt Woche", f"{pct}%")
 st.caption(f"Tage fertig: {dc}/{len(DAYS)}")
 st.caption(f"Letztes Speichern: {st.session_state.saved_at}")
+st.caption(f"Backend: {'Postgres (Supabase)' if pg_ready() else 'Lokale SQLite-Datei'}")
 
 opts = [f"{x} · {DAY_LBL[x][:6]}" for x in DAYS]
 idx = DAYS.index(d)

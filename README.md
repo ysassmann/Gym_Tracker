@@ -11,14 +11,14 @@ uv run streamlit run app.py
 ## iPhone usage at the gym
 
 - Recommended: host on the internet (e.g. Streamlit Community Cloud) so your phone can access it anywhere.
-- Fallback: run on your PC only for same-network access (or VPN).
+- Connect with Postgres SQL database for permenante data
 
 ## Data persistence
 
-- Preferred backend: Supabase Postgres via Streamlit secrets (`PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, `PGSSLMODE`).
-- Fallback backend: local `gymtracker_state.sqlite3` when Postgres secrets are not set.
+- Preferred backend: Supabase Postgres via Streamlit.
+- Fallback backend: local `gymtracker_state.sqlite3` when connection to Postgres db is not active.
 - First Postgres start migrates local SQLite/JSON data automatically if remote table is still empty.
-- For Streamlit Cloud durability, use Postgres; local files are not guaranteed across app rebuilds.
+- For data peristance, use Postgres.
 - The app shows the active backend in the UI (`Postgres (Supabase)` or local SQLite fallback).
 
 ## Supabase table

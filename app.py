@@ -8,8 +8,10 @@ from pathlib import Path
 
 import psycopg
 import streamlit as st
+import streamlit.components.v1 as components
 from dotenv import load_dotenv
 from streamlit.errors import StreamlitSecretNotFoundError
+from streamlit_cookies_controller import CookieController
 
 from program import DAY_LBL, DAYS, DELOAD, RPE_L, cnt_done, day_exs, sk
 
@@ -18,6 +20,11 @@ BASE_DIR = Path(__file__).resolve().parent
 JSON_PATH = BASE_DIR / "gymtracker_state.json"
 DB_PATH = BASE_DIR / "gymtracker_state.sqlite3"
 PG_KEYS = ("PGHOST", "PGPORT", "PGDATABASE", "PGUSER", "PGPASSWORD")
+AUTH_COOKIE = "gt_auth_until"
+DAY_COOKIE = "gt_day"
+WEEK_COOKIE = "gt_week"
+AUTH_SECONDS = 90 * 60
+LOCATION_SECONDS = 60 * 60 * 24 * 90
 
 
 def cfg(key: str):
@@ -38,6 +45,20 @@ def expected_password() -> str:
         return str(st.secrets["GYM_APP_PASSWORD"])
     except (StreamlitSecretNotFoundError, KeyError):
         return "Gym!"
+
+
+def int_cookie(cookies: CookieController, key: str, default: int) -> int:
+    v = cookies.get(key)
+    return int(v) if str(v).isdigit() else default
+
+
+def save_location(cookies: CookieController, week: int, day: str) -> None:
+    cookies.set(WEEK_COOKIE, str(week), max_age=LOCATION_SECONDS)
+    cookies.set(DAY_COOKIE, day, max_age=LOCATION_SECONDS)
+
+
+def cookie_auth_ok(cookies: CookieController) -> bool:
+    return int_cookie(cookies, AUTH_COOKIE, 0) > int(time.time())
 
 
 def sqlite_conn() -> sqlite3.Connection:
@@ -307,9 +328,10 @@ def build_summary_text(db: dict, w: int) -> str:
 
 
 st.set_page_config(page_title="Training", layout="centered", initial_sidebar_state="collapsed")
+cookies = CookieController()
 
 if "auth_ok" not in st.session_state:
-    st.session_state.auth_ok = False
+    st.session_state.auth_ok = cookie_auth_ok(cookies)
 
 if not st.session_state.auth_ok:
     st.title("Training")
@@ -318,6 +340,7 @@ if not st.session_state.auth_ok:
     if st.button("Anmelden"):
         if st.session_state.get("gate_pw", "") == expected_password():
             st.session_state.auth_ok = True
+            cookies.set(AUTH_COOKIE, str(int(time.time()) + AUTH_SECONDS), max_age=AUTH_SECONDS)
             st.rerun()
         st.error("Falsches Passwort")
     st.stop()
@@ -326,53 +349,129 @@ ensure_db()
 db = st.session_state.db
 
 if "week" not in st.session_state:
-    st.session_state.week = 1
+    st.session_state.week = max(1, min(24, int_cookie(cookies, WEEK_COOKIE, 1)))
 if "day" not in st.session_state:
-    st.session_state.day = "A"
+    st.session_state.day = cookies.get(DAY_COOKIE) if cookies.get(DAY_COOKIE) in DAYS else "A"
 
 w = st.session_state.week
 d = st.session_state.day
 ph = 1 if w <= 8 else (2 if w <= 16 else 3)
 
-st.title("Training")
 st.markdown(
     """
     <style>
-      .block-container {max-width: 760px; padding-top: 1rem; padding-bottom: 5rem;}
-      div[data-testid="stButton"] > button {border-radius: 12px; height: 2.7rem;}
-      div[data-testid="stTextInput"] input, div[data-testid="stTextArea"] textarea {border-radius: 10px;}
-      div[data-testid="stCheckbox"] {padding: .25rem 0;}
-      div[data-testid="stCheckbox"] label {font-size: 1.05rem; min-height: 2.2rem;}
-      div[data-testid="stCheckbox"] input {transform: scale(1.35);}
+      :root {
+        --gt-bg2:#f5f5f7; --gt-bg3:#ebebed; --gt-txt:#1c1c1e; --gt-txt2:#6e6e73; --gt-txt3:#aeaeb2;
+        --gt-border:rgba(60,60,67,.13); --gt-border2:rgba(60,60,67,.25);
+        --gt-blue:#0071e3; --gt-green:#34c759; --gt-red:#ff3b30; --gt-orange:#ff9500;
+        --gt-info-bg:#e8f0fd; --gt-info-txt:#0071e3; --gt-warn-bg:#fff3e0; --gt-warn-txt:#c46000;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --gt-bg2:#2c2c2e; --gt-bg3:#3a3a3c; --gt-txt:#f5f5f7; --gt-txt2:#aeaeb2; --gt-txt3:#636366;
+          --gt-border:rgba(255,255,255,.12); --gt-border2:rgba(255,255,255,.22);
+          --gt-blue:#4da3ff; --gt-green:#30d158; --gt-info-bg:#002760; --gt-info-txt:#4da3ff;
+          --gt-warn-bg:#3d2500; --gt-warn-txt:#ff9f0a;
+        }
+      }
+      .block-container {max-width: 430px; padding: .7rem .9rem 5rem;}
+      .gt-topbar {display:flex; align-items:center; justify-content:space-between; padding:.25rem 0 .45rem; border-bottom:.5px solid var(--gt-border);}
+      .gt-title {font-size:1.05rem; font-weight:650; color:var(--gt-txt);}
+      .gt-week-label {font-size:.9rem; font-weight:550; color:var(--gt-txt2); text-align:center; padding-top:.55rem;}
+      .gt-pills {display:flex; gap:.45rem; align-items:center; margin:.7rem 0 .55rem;}
+      .gt-pill {font-size:.75rem; font-weight:600; padding:.22rem .7rem; border-radius:999px; background:var(--gt-info-bg); color:var(--gt-info-txt);}
+      .gt-pill.warn {background:var(--gt-warn-bg); color:var(--gt-warn-txt);}
+      .gt-stats {display:grid; grid-template-columns:repeat(3,1fr); gap:.5rem; margin:.35rem 0 .75rem;}
+      .gt-stat {background:var(--gt-bg2); border-radius:10px; padding:.6rem .7rem;}
+      .gt-stat-val {font-size:1.35rem; font-weight:700; color:var(--gt-txt); line-height:1.05;}
+      .gt-stat-lbl {font-size:.68rem; color:var(--gt-txt3); margin-top:.1rem;}
+      .gt-meta {font-size:.72rem; color:var(--gt-txt3); margin:.1rem 0 .65rem;}
+      .gt-sec {font-size:.76rem; font-weight:750; color:var(--gt-txt3); text-transform:uppercase; letter-spacing:.04em; margin:1rem 0 .35rem;}
+      .gt-badges {display:flex; flex-wrap:wrap; gap:.3rem; margin:.25rem 0 .35rem;}
+      .gt-badge {display:inline-block; background:var(--gt-info-bg); color:var(--gt-info-txt); font-size:.7rem; font-weight:600; padding:.18rem .5rem; border-radius:6px;}
+      .gt-badge.alt {background:var(--gt-bg2); color:var(--gt-txt3);}
+      .gt-card-title {font-size:.98rem; font-weight:650; color:var(--gt-txt); line-height:1.25;}
+      .gt-presc {font-size:.82rem; color:var(--gt-txt2); line-height:1.35; margin-top:.1rem;}
+      .gt-warn {background:var(--gt-warn-bg); color:var(--gt-warn-txt); border-radius:10px; padding:.65rem .8rem; font-size:.82rem; margin:.45rem 0;}
+      div[data-testid="stVerticalBlockBorderWrapper"] {border-color:var(--gt-border) !important; border-radius:14px !important; padding:.15rem 0 !important;}
+      div[data-testid="stButton"] > button {border-radius:14px; min-height:2.75rem; font-weight:650;}
+      div[data-testid="stTextInput"] input, div[data-testid="stTextArea"] textarea, div[data-testid="stNumberInput"] input {border-radius:10px; background:var(--gt-bg2);}
+      div[data-testid="stCheckbox"] {padding:.05rem 0;}
+      div[data-testid="stCheckbox"] label {font-size:1.05rem; min-height:2.55rem;}
+      div[data-testid="stCheckbox"] input {transform:scale(1.45);}
+      div[data-testid="stSegmentedControl"] {margin:.1rem 0 .55rem;}
+      div[data-testid="stSegmentedControl"] button {border-radius:10px !important; min-height:2.55rem;}
     </style>
     """,
     unsafe_allow_html=True,
 )
-
-x1, x2, x3 = st.columns([1, 2, 1])
-with x1:
-    if st.button("‹", use_container_width=True):
-        st.session_state.week = max(1, w - 1)
-        st.rerun()
-with x2:
-    st.markdown(f"<div style='text-align:center;font-weight:600'>Wo {w} / 24</div>", unsafe_allow_html=True)
-with x3:
-    if st.button("›", use_container_width=True):
-        st.session_state.week = min(24, w + 1)
-        st.rerun()
+components.html(
+    """
+    <script>
+    (() => {
+      try {
+        const key = "gymtracker_scroll_y";
+        const root = window.parent;
+        const store = root.localStorage;
+        const restore = () => {
+          const y = Number(store.getItem(key) || 0);
+          if (y > 0) root.scrollTo(0, y);
+        };
+        restore();
+        setTimeout(restore, 350);
+        setTimeout(restore, 900);
+        let last = 0;
+        root.addEventListener("scroll", () => {
+          const now = Date.now();
+          if (now - last > 250) {
+            store.setItem(key, String(root.scrollY || 0));
+            last = now;
+          }
+        }, {passive: true});
+      } catch (_) {}
+    })();
+    </script>
+    """,
+    height=0,
+)
 
 cap = f"Phase {ph}"
 if w in DELOAD:
     cap += " · Deload"
-st.caption(cap)
-if w in DELOAD:
-    st.warning("Deload-Woche: alle Sätze halbieren, Gewicht gleich lassen.")
-
 pct, dc = week_stats(db, w)
-st.metric("Fortschritt Woche", f"{pct}%")
-st.caption(f"Tage fertig: {dc}/{len(DAYS)}")
-st.caption(f"Letztes Speichern: {st.session_state.saved_at}")
-st.caption(f"Backend: {'Postgres (Supabase)' if pg_ready() else 'Lokale SQLite-Datei'}")
+
+st.markdown('<div class="gt-topbar"><div class="gt-title">Training</div></div>', unsafe_allow_html=True)
+x1, x2, x3 = st.columns([1, 2, 1])
+with x1:
+    if st.button("‹", use_container_width=True):
+        st.session_state.week = max(1, w - 1)
+        save_location(cookies, st.session_state.week, st.session_state.day)
+        st.rerun()
+with x2:
+    st.markdown(f'<div class="gt-week-label">Wo {w}</div>', unsafe_allow_html=True)
+with x3:
+    if st.button("›", use_container_width=True):
+        st.session_state.week = min(24, w + 1)
+        save_location(cookies, st.session_state.week, st.session_state.day)
+        st.rerun()
+
+st.markdown(
+    f"""
+    <div class="gt-pills">
+      <span class="gt-pill">Phase {ph}</span>
+      {'<span class="gt-pill warn">Deload</span>' if w in DELOAD else ''}
+    </div>
+    <div class="gt-stats">
+      <div class="gt-stat"><div class="gt-stat-val">{pct}%</div><div class="gt-stat-lbl">Woche</div></div>
+      <div class="gt-stat"><div class="gt-stat-val">{dc}/{len(DAYS)}</div><div class="gt-stat-lbl">Tage</div></div>
+      <div class="gt-stat"><div class="gt-stat-val">{w}/24</div><div class="gt-stat-lbl">Woche</div></div>
+    </div>
+    <div class="gt-meta">Gespeichert: {st.session_state.saved_at} · Backend: {'Postgres' if pg_ready() else 'SQLite lokal'}</div>
+    """,
+    unsafe_allow_html=True,
+)
+if w in DELOAD:
+    st.markdown('<div class="gt-warn">Deload-Woche: alle Sätze halbieren, Gewicht gleich lassen</div>', unsafe_allow_html=True)
 
 opts = [f"{x} · {DAY_LBL[x][:6]}" for x in DAYS]
 idx = DAYS.index(d)
@@ -383,6 +482,7 @@ if hasattr(st, "segmented_control"):
 else:
     choice = st.radio("Tag", range(len(DAYS)), horizontal=True, format_func=lambda i: opts[i], index=idx, label_visibility="collapsed")
     st.session_state.day = DAYS[choice]
+save_location(cookies, w, st.session_state.day)
 d = st.session_state.day
 
 exs = day_exs(d, w)
@@ -394,31 +494,40 @@ def ex_block(e: dict, warmup: bool):
     k_chk = sk(w, d, e["id"], "chk")
     init_widget(k_chk, False)
     with st.container(border=True):
-        tag = " · Warmup" if warmup else ""
-        st.markdown(f"**{e['name']}**{tag}")
-        st.caption(e["presc"])
-        if e.get("tgt") not in (None, "", "–"):
-            st.caption(f"Ziel: {e['tgt']} {e.get('unit', '')}")
-        if e.get("alt"):
-            st.caption(e["alt"])
-        st.checkbox("Erledigt", key=k_chk, on_change=persist_key, args=(k_chk,))
+        ca, cb = st.columns([1, 5])
+        with ca:
+            st.checkbox("✓", key=k_chk, on_change=persist_key, args=(k_chk,), label_visibility="collapsed")
+        with cb:
+            badge = '<span class="gt-badge alt">warmup</span>' if warmup else ""
+            st.markdown(f'<div class="gt-card-title">{e["name"]} {badge}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="gt-presc">{e["presc"]}</div>', unsafe_allow_html=True)
+            badges = []
+            if e.get("tgt") not in (None, "", "–"):
+                badges.append(f'<span class="gt-badge">Ziel: {e["tgt"]} {e.get("unit", "")}</span>')
+            if e.get("alt"):
+                badges.append(f'<span class="gt-badge alt">{e["alt"]}</span>')
+            if badges:
+                st.markdown(f'<div class="gt-badges">{"".join(badges)}</div>', unsafe_allow_html=True)
         if not warmup and not e.get("noinput"):
             u = e.get("unit") or "kg"
             k_aw, k_ar, k_an = sk(w, d, e["id"], "aw"), sk(w, d, e["id"], "ar"), sk(w, d, e["id"], "an")
             init_widget(k_aw, 0.0)
             init_widget(k_ar, 0)
             init_widget(k_an, "")
-            st.number_input(f"Gewicht ({u})", key=k_aw, min_value=0.0, step=0.5, format="%g", on_change=persist_key, args=(k_aw,))
-            st.number_input("Wdh", key=k_ar, min_value=0, step=1, on_change=persist_key, args=(k_ar,))
-            st.text_input("Notiz", key=k_an, placeholder="Kurz notieren…", on_change=persist_key, args=(k_an,))
+            i1, i2 = st.columns(2)
+            with i1:
+                st.number_input(f"Erreicht ({u})", key=k_aw, min_value=0.0, step=0.5, format="%g", on_change=persist_key, args=(k_aw,))
+            with i2:
+                st.number_input("Reps", key=k_ar, min_value=0, step=1, on_change=persist_key, args=(k_ar,))
+            st.text_input("Notiz", key=k_an, placeholder="Notiz...", on_change=persist_key, args=(k_an,))
 
 
 if wus:
-    st.subheader("Warm-up")
+    st.markdown('<div class="gt-sec">Warmup</div>', unsafe_allow_html=True)
     for e in wus:
         ex_block(e, True)
 
-st.subheader("Hauptübungen")
+st.markdown('<div class="gt-sec">Hauptübungen</div>', unsafe_allow_html=True)
 for e in mains:
     ex_block(e, False)
 
@@ -448,36 +557,40 @@ if v_rpe not in range(11):
     st.session_state[k_rpe] = x
     st.session_state.db[k_rpe] = x
     save_db(st.session_state.db)
-if hasattr(st, "segmented_control"):
-    rv = st.segmented_control("Wie anstrengend? (RPE)", list(range(11)), default=int(st.session_state[k_rpe]), selection_mode="single", format_func=lambda x: "—" if x == 0 else str(x))
-    st.session_state[k_rpe] = int(rv or 0)
-    persist_key(k_rpe)
-else:
-    st.radio(
-        "Wie anstrengend? (RPE)",
-        list(range(11)),
-        horizontal=True,
-        format_func=lambda x: "—" if x == 0 else str(x),
-        key=k_rpe,
-        on_change=persist_key,
-        args=(k_rpe,),
-    )
-rv = int(st.session_state[k_rpe])
-if rv and rv in RPE_L:
-    st.caption(f"RPE {rv} — {RPE_L[rv]}")
-if rv >= 9:
-    st.caption("Gewicht nächste Woche NICHT steigern!")
+with st.container(border=True):
+    st.markdown('<div class="gt-card-title">Wie anstrengend? (RPE)</div>', unsafe_allow_html=True)
+    if hasattr(st, "segmented_control"):
+        rv = st.segmented_control("Wie anstrengend? (RPE)", list(range(11)), default=int(st.session_state[k_rpe]), selection_mode="single", format_func=lambda x: "—" if x == 0 else str(x), label_visibility="collapsed")
+        st.session_state[k_rpe] = int(rv or 0)
+        persist_key(k_rpe)
+    else:
+        st.radio(
+            "Wie anstrengend? (RPE)",
+            list(range(11)),
+            horizontal=True,
+            format_func=lambda x: "—" if x == 0 else str(x),
+            key=k_rpe,
+            on_change=persist_key,
+            args=(k_rpe,),
+            label_visibility="collapsed",
+        )
+    rv = int(st.session_state[k_rpe])
+    if rv and rv in RPE_L:
+        st.caption(f"RPE {rv} — {RPE_L[rv]}")
+    if rv >= 9:
+        st.caption("Gewicht nächste Woche NICHT steigern!")
 
 k_sn = sk(w, d, "_", "sn")
 init_widget(k_sn, "")
-st.text_area(
-    "Session-Notizen",
-    key=k_sn,
-    placeholder="Schmerzen, Energie, Besonderheiten…",
-    on_change=persist_key,
-    args=(k_sn,),
-    height=88,
-)
+with st.container(border=True):
+    st.text_area(
+        "Session-Notizen",
+        key=k_sn,
+        placeholder="Schmerzen, Energie, Besonderheiten...",
+        on_change=persist_key,
+        args=(k_sn,),
+        height=88,
+    )
 
 persist_values(
     active_day_keys(exs, w, d, k_rpe, k_sn)
@@ -485,34 +598,38 @@ persist_values(
 
 cd, ct = cnt_done(db, w, d)
 all_done = ct > 0 and cd == ct
-if st.button("Jetzt speichern", use_container_width=True):
-    persist_values(active_day_keys(exs, w, d, k_rpe, k_sn))
-if st.button("Alle Hauptübungen abhaken / lösen"):
-    flip = all(db.get(sk(w, d, e["id"], "chk"), False) for e in mains) if mains else False
-    for e in mains:
-        k = sk(w, d, e["id"], "chk")
-        nv = not flip
-        st.session_state.db[k] = nv
-        st.session_state[k] = nv
-    save_db(st.session_state.db)
-    st.rerun()
-
-st.caption("Tag abgeschlossen ✓" if all_done else f"Hauptübungen: {cd}/{ct}")
+with st.container(border=True):
+    st.caption("Tag abgeschlossen ✓" if all_done else f"Hauptübungen: {cd}/{ct}")
+    a1, a2 = st.columns([1, 1])
+    with a1:
+        if st.button("Jetzt speichern", use_container_width=True):
+            persist_values(active_day_keys(exs, w, d, k_rpe, k_sn))
+    with a2:
+        if st.button("Alle abhaken", use_container_width=True):
+            flip = all(db.get(sk(w, d, e["id"], "chk"), False) for e in mains) if mains else False
+            for e in mains:
+                k = sk(w, d, e["id"], "chk")
+                nv = not flip
+                st.session_state.db[k] = nv
+                st.session_state[k] = nv
+            save_db(st.session_state.db)
+            st.rerun()
 
 with st.expander("Export"):
-    st.download_button("CSV (alle Wochen)", build_csv(db).encode("utf-8"), "gym_tracker_export.csv", "text/csv", on_click="ignore")
+    st.download_button("CSV (alle Wochen)", build_csv(db).encode("utf-8"), "gym_tracker_export.csv", "text/csv", on_click="ignore", use_container_width=True)
     st.download_button(
         "JSON-Backup",
         json.dumps(db, ensure_ascii=False, indent=2).encode("utf-8"),
         "gym_tracker_backup.json",
         "application/json",
         on_click="ignore",
+        use_container_width=True,
     )
-    st.download_button("Wochenzusammenfassung (.txt)", build_summary_text(db, w).encode("utf-8"), f"gym_woche_{w}.txt", "text/plain", on_click="ignore")
+    st.download_button("Wochenzusammenfassung (.txt)", build_summary_text(db, w).encode("utf-8"), f"gym_woche_{w}.txt", "text/plain", on_click="ignore", use_container_width=True)
 
-with st.expander("Hosting-Hinweise (iPhone im Gym)"):
+with st.expander("Hosting-Hinweise"):
     st.markdown(
-        "- **Empfohlen:** Internet-Hosting (z. B. Streamlit Community Cloud), damit das iPhone ueberall zugreifen kann.\n"
-        "- **Fallback:** lokal auf dem PC nur im selben Netzwerk/VPN nutzbar.\n"
-        "- **Speicher:** SQLite bleibt nur dann dauerhaft, wenn das Hosting persistente Daten traegt."
+        "- **Empfohlen:** Streamlit Cloud mit Supabase Postgres.\n"
+        "- **Fallback:** lokal auf dem PC nur im selben Netzwerk/VPN.\n"
+        "- **Speicher:** SQLite ist lokal, Postgres ist dauerhaft."
     )

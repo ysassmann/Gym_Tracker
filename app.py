@@ -25,31 +25,6 @@ DAY_COOKIE = "gt_day"
 WEEK_COOKIE = "gt_week"
 AUTH_SECONDS = 90 * 60
 LOCATION_SECONDS = 60 * 60 * 24 * 90
-DEBUG_LOG_PATH = BASE_DIR / "debug-602ba8.log"
-DEBUG_SESSION_ID = "602ba8"
-DEBUG_RUN_ID = "pre-fix"
-
-
-def dlog(hypothesis_id: str, location: str, message: str, data: dict) -> None:
-    try:
-        with DEBUG_LOG_PATH.open("a", encoding="utf-8") as f:
-            f.write(
-                json.dumps(
-                    {
-                        "sessionId": DEBUG_SESSION_ID,
-                        "runId": DEBUG_RUN_ID,
-                        "hypothesisId": hypothesis_id,
-                        "location": location,
-                        "message": message,
-                        "data": data,
-                        "timestamp": int(time.time() * 1000),
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-    except Exception:
-        pass
 
 
 def cfg(key: str):
@@ -80,18 +55,11 @@ def int_cookie(cookies: CookieController, key: str, default: int) -> int:
 def save_location(cookies: CookieController, week: int, day: str) -> None:
     cookies.set(WEEK_COOKIE, str(week), max_age=LOCATION_SECONDS)
     cookies.set(DAY_COOKIE, day, max_age=LOCATION_SECONDS)
-    # region agent log
-    dlog("H3", "app.py:save_location", "Saved week/day location cookies", {"week": week, "day": day})
-    # endregion
 
 
 def cookie_auth_ok(cookies: CookieController) -> bool:
     until = int_cookie(cookies, AUTH_COOKIE, 0)
-    ok = until > int(time.time())
-    # region agent log
-    dlog("H1,H2", "app.py:cookie_auth_ok", "Evaluated auth cookie", {"cookiePresent": bool(until), "secondsRemaining": max(0, until - int(time.time())), "authOk": ok})
-    # endregion
-    return ok
+    return until > int(time.time())
 
 
 def sqlite_conn() -> sqlite3.Connection:
@@ -177,30 +145,18 @@ def load_db() -> dict:
     ready = pg_ready()
     if not ready:
         db = load_sqlite_or_json_db()
-        # region agent log
-        dlog("H5", "app.py:load_db", "Loaded database from local fallback", {"source": "local", "keys": len(db)})
-        # endregion
         return db
     db = load_pg_db()
     if db:
-        # region agent log
-        dlog("H5", "app.py:load_db", "Loaded database from Postgres", {"source": "postgres", "keys": len(db)})
-        # endregion
         return db
     local = load_sqlite_or_json_db()
     if local:
         save_pg_db(local)
-        # region agent log
-        dlog("H5", "app.py:load_db", "Migrated local database into empty Postgres", {"localKeys": len(local)})
-        # endregion
     return local
 
 
 def save_db(db: dict) -> None:
     target = "postgres" if pg_ready() else "local"
-    # region agent log
-    dlog("H5", "app.py:save_db", "Saving database", {"target": target, "keys": len(db)})
-    # endregion
     if target == "postgres":
         save_pg_db(db)
     else:
@@ -389,9 +345,6 @@ if not st.session_state.auth_ok:
         if st.session_state.get("gate_pw", "") == expected_password():
             st.session_state.auth_ok = True
             cookies.set(AUTH_COOKIE, str(int(time.time()) + AUTH_SECONDS), max_age=AUTH_SECONDS)
-            # region agent log
-            dlog("H2", "app.py:login", "Successful login set auth cookie", {"authSeconds": AUTH_SECONDS})
-            # endregion
             st.rerun()
         st.error("Falsches Passwort")
     st.stop()
@@ -405,10 +358,6 @@ if "week" not in st.session_state:
 if "day" not in st.session_state:
     day_cookie = cookies.get(DAY_COOKIE)
     st.session_state.day = day_cookie if day_cookie in DAYS else "A"
-
-# region agent log
-dlog("H3", "app.py:init_location", "Initialized week/day from cookies/session", {"week": st.session_state.week, "day": st.session_state.day, "rawWeekCookie": str(cookies.get(WEEK_COOKIE)), "rawDayCookie": str(cookies.get(DAY_COOKIE))})
-# endregion
 
 w = st.session_state.week
 d = st.session_state.day
@@ -445,17 +394,17 @@ st.markdown(
       .gt-meta {font-size:.72rem; color:var(--gt-txt3); margin:.1rem 0 .65rem;}
       .gt-sec {font-size:.76rem; font-weight:750; color:var(--gt-txt3); text-transform:uppercase; letter-spacing:.04em; margin:1rem 0 .35rem;}
       .gt-badges {display:flex; flex-wrap:wrap; gap:.3rem; margin:.25rem 0 .35rem;}
-      .gt-badge {display:inline-block; background:var(--gt-info-bg); color:var(--gt-info-txt); font-size:.7rem; font-weight:600; padding:.18rem .5rem; border-radius:6px;}
+      .gt-badge {display:inline-block; background:var(--gt-info-bg); color:var(--gt-info-txt); font-size:.78rem; font-weight:650; padding:.22rem .55rem; border-radius:7px;}
       .gt-badge.alt {background:var(--gt-bg2); color:var(--gt-txt3);}
-      .gt-card-title {font-size:.98rem; font-weight:650; color:var(--gt-txt); line-height:1.25;}
-      .gt-presc {font-size:.82rem; color:var(--gt-txt2); line-height:1.35; margin-top:.1rem;}
+      .gt-card-title {font-size:1.13rem; font-weight:700; color:var(--gt-txt); line-height:1.25; padding-top:.08rem;}
+      .gt-presc {font-size:.96rem; color:var(--gt-txt2); line-height:1.35; margin-top:.12rem;}
       .gt-warn {background:var(--gt-warn-bg); color:var(--gt-warn-txt); border-radius:10px; padding:.65rem .8rem; font-size:.82rem; margin:.45rem 0;}
-      div[data-testid="stVerticalBlockBorderWrapper"] {border-color:var(--gt-border) !important; border-radius:14px !important; padding:.15rem 0 !important;}
+      div[data-testid="stVerticalBlockBorderWrapper"] {border-color:var(--gt-border) !important; border-radius:14px !important; padding:.05rem 0 !important;}
       div[data-testid="stButton"] > button {border-radius:14px; min-height:2.75rem; font-weight:650;}
       div[data-testid="stTextInput"] input, div[data-testid="stTextArea"] textarea, div[data-testid="stNumberInput"] input {border-radius:10px; background:var(--gt-bg2);}
-      div[data-testid="stCheckbox"] {padding:.05rem 0;}
-      div[data-testid="stCheckbox"] label {font-size:1.05rem; min-height:2.55rem;}
-      div[data-testid="stCheckbox"] input {transform:scale(1.45);}
+      div[data-testid="stCheckbox"] {padding:.1rem 0; min-height:3rem;}
+      div[data-testid="stCheckbox"] label {font-size:1.15rem; min-height:3rem; display:flex; align-items:center;}
+      div[data-testid="stCheckbox"] input {transform:scale(1.9); margin:.45rem;}
       div[data-testid="stSegmentedControl"] {margin:.1rem 0 .55rem;}
       div[data-testid="stSegmentedControl"] button {border-radius:10px !important; min-height:2.55rem;}
     </style>
@@ -470,31 +419,22 @@ components.html(
         const key = "gymtracker_scroll_y";
         const root = window.parent;
         const store = root.localStorage;
-        const log = (message, data) => fetch('http://127.0.0.1:7548/ingest/a6d04857-a70c-49e6-8a07-ef14bf2503c0',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'602ba8'},body:JSON.stringify({sessionId:'602ba8',runId:'pre-fix',hypothesisId:'H4',location:'app.py:scroll_component',message,data,timestamp:Date.now()})}).catch(()=>{});
         const restore = () => {
           const y = Number(store.getItem(key) || 0);
           if (y > 0) root.scrollTo(0, y);
-          log("Attempted scroll restore", {savedY:y, currentY:root.scrollY || 0});
         };
         restore();
         setTimeout(restore, 350);
         setTimeout(restore, 900);
         let last = 0;
-        let loggedStore = false;
         root.addEventListener("scroll", () => {
           const now = Date.now();
           if (now - last > 250) {
             store.setItem(key, String(root.scrollY || 0));
-            if (!loggedStore) {
-              log("Stored scroll position", {scrollY:root.scrollY || 0});
-              loggedStore = true;
-            }
             last = now;
           }
         }, {passive: true});
-      } catch (e) {
-        fetch('http://127.0.0.1:7548/ingest/a6d04857-a70c-49e6-8a07-ef14bf2503c0',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'602ba8'},body:JSON.stringify({sessionId:'602ba8',runId:'pre-fix',hypothesisId:'H4',location:'app.py:scroll_component',message:'Scroll restoration script failed',data:{error:String(e && e.message || e)},timestamp:Date.now()})}).catch(()=>{});
-      }
+      } catch (_) {}
     })();
     </script>
     """,

@@ -25,6 +25,31 @@ DAY_COOKIE = "gt_day"
 WEEK_COOKIE = "gt_week"
 AUTH_SECONDS = 90 * 60
 LOCATION_SECONDS = 60 * 60 * 24 * 90
+DEBUG_LOG_PATH = BASE_DIR / "debug-602ba8.log"
+DEBUG_SESSION_ID = "602ba8"
+DEBUG_RUN_ID = "pre-fix"
+
+
+def dlog(hypothesis_id: str, location: str, message: str, data: dict) -> None:
+    try:
+        with DEBUG_LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "sessionId": DEBUG_SESSION_ID,
+                        "runId": DEBUG_RUN_ID,
+                        "hypothesisId": hypothesis_id,
+                        "location": location,
+                        "message": message,
+                        "data": data,
+                        "timestamp": int(time.time() * 1000),
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+    except Exception:
+        pass
 
 
 def cfg(key: str):
@@ -55,10 +80,18 @@ def int_cookie(cookies: CookieController, key: str, default: int) -> int:
 def save_location(cookies: CookieController, week: int, day: str) -> None:
     cookies.set(WEEK_COOKIE, str(week), max_age=LOCATION_SECONDS)
     cookies.set(DAY_COOKIE, day, max_age=LOCATION_SECONDS)
+    # region agent log
+    dlog("H3", "app.py:save_location", "Saved week/day location cookies", {"week": week, "day": day})
+    # endregion
 
 
 def cookie_auth_ok(cookies: CookieController) -> bool:
-    return int_cookie(cookies, AUTH_COOKIE, 0) > int(time.time())
+    until = int_cookie(cookies, AUTH_COOKIE, 0)
+    ok = until > int(time.time())
+    # region agent log
+    dlog("H1,H2", "app.py:cookie_auth_ok", "Evaluated auth cookie", {"cookiePresent": bool(until), "secondsRemaining": max(0, until - int(time.time())), "authOk": ok})
+    # endregion
+    return ok
 
 
 def sqlite_conn() -> sqlite3.Connection:
@@ -141,19 +174,34 @@ def save_pg_db(db: dict) -> None:
 
 
 def load_db() -> dict:
-    if not pg_ready():
-        return load_sqlite_or_json_db()
+    ready = pg_ready()
+    if not ready:
+        db = load_sqlite_or_json_db()
+        # region agent log
+        dlog("H5", "app.py:load_db", "Loaded database from local fallback", {"source": "local", "keys": len(db)})
+        # endregion
+        return db
     db = load_pg_db()
     if db:
+        # region agent log
+        dlog("H5", "app.py:load_db", "Loaded database from Postgres", {"source": "postgres", "keys": len(db)})
+        # endregion
         return db
     local = load_sqlite_or_json_db()
     if local:
         save_pg_db(local)
+        # region agent log
+        dlog("H5", "app.py:load_db", "Migrated local database into empty Postgres", {"localKeys": len(local)})
+        # endregion
     return local
 
 
 def save_db(db: dict) -> None:
-    if pg_ready():
+    target = "postgres" if pg_ready() else "local"
+    # region agent log
+    dlog("H5", "app.py:save_db", "Saving database", {"target": target, "keys": len(db)})
+    # endregion
+    if target == "postgres":
         save_pg_db(db)
     else:
         save_sqlite_db(db)
@@ -341,6 +389,9 @@ if not st.session_state.auth_ok:
         if st.session_state.get("gate_pw", "") == expected_password():
             st.session_state.auth_ok = True
             cookies.set(AUTH_COOKIE, str(int(time.time()) + AUTH_SECONDS), max_age=AUTH_SECONDS)
+            # region agent log
+            dlog("H2", "app.py:login", "Successful login set auth cookie", {"authSeconds": AUTH_SECONDS})
+            # endregion
             st.rerun()
         st.error("Falsches Passwort")
     st.stop()
@@ -349,9 +400,15 @@ ensure_db()
 db = st.session_state.db
 
 if "week" not in st.session_state:
-    st.session_state.week = max(1, min(24, int_cookie(cookies, WEEK_COOKIE, 1)))
+    week_cookie = int_cookie(cookies, WEEK_COOKIE, 1)
+    st.session_state.week = max(1, min(24, week_cookie))
 if "day" not in st.session_state:
-    st.session_state.day = cookies.get(DAY_COOKIE) if cookies.get(DAY_COOKIE) in DAYS else "A"
+    day_cookie = cookies.get(DAY_COOKIE)
+    st.session_state.day = day_cookie if day_cookie in DAYS else "A"
+
+# region agent log
+dlog("H3", "app.py:init_location", "Initialized week/day from cookies/session", {"week": st.session_state.week, "day": st.session_state.day, "rawWeekCookie": str(cookies.get(WEEK_COOKIE)), "rawDayCookie": str(cookies.get(DAY_COOKIE))})
+# endregion
 
 w = st.session_state.week
 d = st.session_state.day
@@ -413,22 +470,31 @@ components.html(
         const key = "gymtracker_scroll_y";
         const root = window.parent;
         const store = root.localStorage;
+        const log = (message, data) => fetch('http://127.0.0.1:7548/ingest/a6d04857-a70c-49e6-8a07-ef14bf2503c0',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'602ba8'},body:JSON.stringify({sessionId:'602ba8',runId:'pre-fix',hypothesisId:'H4',location:'app.py:scroll_component',message,data,timestamp:Date.now()})}).catch(()=>{});
         const restore = () => {
           const y = Number(store.getItem(key) || 0);
           if (y > 0) root.scrollTo(0, y);
+          log("Attempted scroll restore", {savedY:y, currentY:root.scrollY || 0});
         };
         restore();
         setTimeout(restore, 350);
         setTimeout(restore, 900);
         let last = 0;
+        let loggedStore = false;
         root.addEventListener("scroll", () => {
           const now = Date.now();
           if (now - last > 250) {
             store.setItem(key, String(root.scrollY || 0));
+            if (!loggedStore) {
+              log("Stored scroll position", {scrollY:root.scrollY || 0});
+              loggedStore = true;
+            }
             last = now;
           }
         }, {passive: true});
-      } catch (_) {}
+      } catch (e) {
+        fetch('http://127.0.0.1:7548/ingest/a6d04857-a70c-49e6-8a07-ef14bf2503c0',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'602ba8'},body:JSON.stringify({sessionId:'602ba8',runId:'pre-fix',hypothesisId:'H4',location:'app.py:scroll_component',message:'Scroll restoration script failed',data:{error:String(e && e.message || e)},timestamp:Date.now()})}).catch(()=>{});
+      }
     })();
     </script>
     """,

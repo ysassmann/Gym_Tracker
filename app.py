@@ -53,8 +53,8 @@ def int_cookie(cookies: CookieController, key: str, default: int) -> int:
 
 
 def save_location(cookies: CookieController, week: int, day: str) -> None:
-    cookies.set(WEEK_COOKIE, str(week), max_age=LOCATION_SECONDS)
-    cookies.set(DAY_COOKIE, day, max_age=LOCATION_SECONDS)
+    cookies.set(WEEK_COOKIE, str(week), max_age=LOCATION_SECONDS, same_site="lax", secure=True)
+    cookies.set(DAY_COOKIE, day, max_age=LOCATION_SECONDS, same_site="lax", secure=True)
 
 
 def cookie_auth_ok(cookies: CookieController) -> bool:
@@ -334,6 +334,42 @@ def build_summary_text(db: dict, w: int) -> str:
 st.set_page_config(page_title="Training", layout="centered", initial_sidebar_state="collapsed")
 cookies = CookieController()
 
+components.html(
+    """
+    <script>
+    (() => {
+      try {
+        const KEY = 'gt_auth_until';
+        const RELOAD_FLAG = 'gt_auth_reloaded';
+        const now = Math.floor(Date.now() / 1000);
+        const doc = window.parent.document;
+        const m = doc.cookie.match(/(?:^|;\\s*)gt_auth_until=(\\d+)/);
+        const cookieVal = m ? parseInt(m[1], 10) : 0;
+        const stored = parseInt(window.parent.localStorage.getItem(KEY) || '0', 10);
+        if (cookieVal > stored && cookieVal > now) {
+          window.parent.localStorage.setItem(KEY, String(cookieVal));
+          window.parent.sessionStorage.removeItem(RELOAD_FLAG);
+          return;
+        }
+        if (stored <= now && cookieVal <= now) {
+          window.parent.sessionStorage.removeItem(RELOAD_FLAG);
+          return;
+        }
+        if (stored > cookieVal && stored > now) {
+          const maxAge = stored - now;
+          doc.cookie = `${KEY}=${stored}; path=/; max-age=${maxAge}; SameSite=Lax; Secure`;
+          if (!window.parent.sessionStorage.getItem(RELOAD_FLAG)) {
+            window.parent.sessionStorage.setItem(RELOAD_FLAG, '1');
+            window.parent.location.reload();
+          }
+        }
+      } catch (e) {}
+    })();
+    </script>
+    """,
+    height=0,
+)
+
 if "auth_ok" not in st.session_state:
     st.session_state.auth_ok = cookie_auth_ok(cookies)
 
@@ -344,7 +380,13 @@ if not st.session_state.auth_ok:
     if st.button("Anmelden"):
         if st.session_state.get("gate_pw", "") == expected_password():
             st.session_state.auth_ok = True
-            cookies.set(AUTH_COOKIE, str(int(time.time()) + AUTH_SECONDS), max_age=AUTH_SECONDS)
+            cookies.set(
+                AUTH_COOKIE,
+                str(int(time.time()) + AUTH_SECONDS),
+                max_age=AUTH_SECONDS,
+                same_site="lax",
+                secure=True,
+            )
             st.rerun()
         st.error("Falsches Passwort")
     st.stop()

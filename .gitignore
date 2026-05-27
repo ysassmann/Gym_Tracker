@@ -1,1 +1,7 @@
 .streamlit/secrets.toml
+
+.streamlit
+.cursor
+.venv
+
+CLAUDE.md

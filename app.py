@@ -380,15 +380,22 @@ if not st.session_state.auth_ok:
     if st.button("Anmelden"):
         if st.session_state.get("gate_pw", "") == expected_password():
             st.session_state.auth_ok = True
-            cookies.set(
-                AUTH_COOKIE,
-                str(int(time.time()) + AUTH_SECONDS),
-                max_age=AUTH_SECONDS,
-                same_site="lax",
-                secure=True,
+            until = int(time.time()) + AUTH_SECONDS
+            components.html(
+                f"""
+                <script>
+                  try {{
+                    const w = window.parent;
+                    w.document.cookie = 'gt_auth_until={until}; path=/; max-age={AUTH_SECONDS}; SameSite=Lax; Secure';
+                    w.localStorage.setItem('gt_auth_until', '{until}');
+                    setTimeout(() => w.location.reload(), 150);
+                  }} catch(e) {{}}
+                </script>
+                """,
+                height=0,
             )
-            st.rerun()
-        st.error("Falsches Passwort")
+        else:
+            st.error("Falsches Passwort")
     st.stop()
 
 ensure_db()

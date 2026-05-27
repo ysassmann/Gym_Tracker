@@ -6,7 +6,7 @@ Mobile-first Streamlit workout tracker.
 
 ```bash
 uv run streamlit run app.py
-```
+```1
 
 ## iPhone usage at the gym
 

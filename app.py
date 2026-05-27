@@ -1,4 +1,6 @@
 import csv
+import hashlib
+import hmac
 import json
 import os
 import sqlite3
@@ -57,9 +59,25 @@ def save_location(cookies: CookieController, week: int, day: str) -> None:
     cookies.set(DAY_COOKIE, day, max_age=LOCATION_SECONDS, same_site="lax", secure=True)
 
 
-def cookie_auth_ok(cookies: CookieController) -> bool:
-    until = int_cookie(cookies, AUTH_COOKIE, 0)
-    return until > int(time.time())
+def _auth_sign(payload: str) -> str:
+    return hmac.new(expected_password().encode(), payload.encode(), hashlib.sha256).hexdigest()[:16]
+
+
+def make_auth_token(until: int) -> str:
+    return f"{until}.{_auth_sign(str(until))}"
+
+
+def parse_auth_token(token) -> int:
+    if not isinstance(token, str) or "." not in token:
+        return 0
+    try:
+        until_str, sig = token.rsplit(".", 1)
+        if not hmac.compare_digest(sig, _auth_sign(until_str)):
+            return 0
+        until = int(until_str)
+        return until if until > int(time.time()) else 0
+    except (ValueError, TypeError):
+        return 0
 
 
 def sqlite_conn() -> sqlite3.Connection:
@@ -339,30 +357,39 @@ components.html(
     <script>
     (() => {
       try {
-        const KEY = 'gt_auth_until';
-        const RELOAD_FLAG = 'gt_auth_reloaded';
+        const KEY = 'gt_auth';
+        const FLAG = 'gt_auth_reloaded';
+        const w = window.parent;
+        const url = new URL(w.location.href);
+        const paramVal = url.searchParams.get('a') || '';
+        const stored = w.localStorage.getItem(KEY) || '';
+        const extractTs = (t) => {
+          const m = t && t.match(/^(\\d+)\\./);
+          return m ? parseInt(m[1], 10) : 0;
+        };
         const now = Math.floor(Date.now() / 1000);
-        const doc = window.parent.document;
-        const m = doc.cookie.match(/(?:^|;\\s*)gt_auth_until=(\\d+)/);
-        const cookieVal = m ? parseInt(m[1], 10) : 0;
-        const stored = parseInt(window.parent.localStorage.getItem(KEY) || '0', 10);
-        if (cookieVal > stored && cookieVal > now) {
-          window.parent.localStorage.setItem(KEY, String(cookieVal));
-          window.parent.sessionStorage.removeItem(RELOAD_FLAG);
-          return;
-        }
-        if (stored <= now && cookieVal <= now) {
-          window.parent.sessionStorage.removeItem(RELOAD_FLAG);
-          return;
-        }
-        if (stored > cookieVal && stored > now) {
-          const maxAge = stored - now;
-          doc.cookie = `${KEY}=${stored}; path=/; max-age=${maxAge}; SameSite=Lax; Secure`;
-          if (!window.parent.sessionStorage.getItem(RELOAD_FLAG)) {
-            window.parent.sessionStorage.setItem(RELOAD_FLAG, '1');
-            window.parent.location.reload();
+        const paramTs = extractTs(paramVal);
+        const storedTs = extractTs(stored);
+
+        if (paramVal && paramTs > now) {
+          if (paramTs > storedTs) {
+            w.localStorage.setItem(KEY, paramVal);
           }
+          w.sessionStorage.removeItem(FLAG);
+          return;
         }
+        if (stored && storedTs > now) {
+          if (!w.sessionStorage.getItem(FLAG)) {
+            w.sessionStorage.setItem(FLAG, '1');
+            url.searchParams.set('a', stored);
+            w.location.replace(url.toString());
+          }
+          return;
+        }
+        if (stored && storedTs <= now) {
+          w.localStorage.removeItem(KEY);
+        }
+        w.sessionStorage.removeItem(FLAG);
       } catch (e) {}
     })();
     </script>
@@ -371,7 +398,7 @@ components.html(
 )
 
 if "auth_ok" not in st.session_state:
-    st.session_state.auth_ok = cookie_auth_ok(cookies)
+    st.session_state.auth_ok = parse_auth_token(st.query_params.get("a", "")) > 0
 
 if not st.session_state.auth_ok:
     st.title("Training")
@@ -380,20 +407,16 @@ if not st.session_state.auth_ok:
     if st.button("Anmelden"):
         if st.session_state.get("gate_pw", "") == expected_password():
             st.session_state.auth_ok = True
-            until = int(time.time()) + AUTH_SECONDS
-            cookies.set(
-                AUTH_COOKIE,
-                str(until),
-                max_age=AUTH_SECONDS,
-                same_site="lax",
-                secure=True,
-            )
+            token = make_auth_token(int(time.time()) + AUTH_SECONDS)
             components.html(
                 f"""
                 <script>
                   try {{
-                    window.parent.localStorage.setItem('gt_auth_until', '{until}');
-                    setTimeout(() => window.parent.location.reload(), 400);
+                    const w = window.parent;
+                    w.localStorage.setItem('gt_auth', '{token}');
+                    const url = new URL(w.location.href);
+                    url.searchParams.set('a', '{token}');
+                    w.location.replace(url.toString());
                   }} catch(e) {{}}
                 </script>
                 """,

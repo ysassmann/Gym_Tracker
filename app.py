@@ -381,14 +381,19 @@ if not st.session_state.auth_ok:
         if st.session_state.get("gate_pw", "") == expected_password():
             st.session_state.auth_ok = True
             until = int(time.time()) + AUTH_SECONDS
+            cookies.set(
+                AUTH_COOKIE,
+                str(until),
+                max_age=AUTH_SECONDS,
+                same_site="lax",
+                secure=True,
+            )
             components.html(
                 f"""
                 <script>
                   try {{
-                    const w = window.parent;
-                    w.document.cookie = 'gt_auth_until={until}; path=/; max-age={AUTH_SECONDS}; SameSite=Lax; Secure';
-                    w.localStorage.setItem('gt_auth_until', '{until}');
-                    setTimeout(() => w.location.reload(), 150);
+                    window.parent.localStorage.setItem('gt_auth_until', '{until}');
+                    setTimeout(() => window.parent.location.reload(), 400);
                   }} catch(e) {{}}
                 </script>
                 """,
